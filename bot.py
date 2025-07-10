@@ -2,8 +2,13 @@ import logging
 import random
 import os
 import asyncio
+import threading
+import socket
+import time  # For timeouts and performance measurements
+import json  # <-- Add for JSON database
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, CallbackContext, ConversationHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, CallbackContext, ConversationHandler, MessageHandler, filters, ContextTypes
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -20,73 +25,36 @@ ALL_CHANNELS = ["@channelA", "@channelB", "@channelC", "@channelD", "@channelE",
 # Global dict for storing user-specific recommended channels
 user_channels = {}
 
+# Static file server config
+SERVER_HOST = "141.98.210.149"
+SERVER_PORT = 8004  # Changed from 800 to 8004
+
 # Button Texts
 SEARCH_BUTTON_TEXT = "جستجوی فیلم 🔎"
 BEST_MOVIES_BUTTON_TEXT = "250 فیلم برتر 🏆"
 
-# Movies available with preview video URL
-MOVIES = {
-    "The Shawshank Redemption": {
-        "url": "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "imdb": "9.3",
-        "description": "داستان دوستی و امید در زندان شاوشنک، قوی‌ترین نیروی جهان"
-    },
-    "The Godfather": {
-        "url": "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "imdb": "9.2",
-        "description": "حماسه خانواده کورلئونه و داستان مافیای ایتالیایی آمریکایی"
-    },
-    "The Dark Knight": {
-        "url": "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "imdb": "9.0",
-        "description": "مبارزه بتمن با جوکر، آشوبگر روانی که گاتهام را به هرج و مرج می‌کشد"
-    },
-    "Pulp Fiction": {
-        "url": "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "imdb": "8.9",
-        "description": "داستان‌های به هم پیچیده گانگسترها، بوکسور، و دزدان در لس‌آنجلس"
-    },
-    "Fight Club": {
-        "url": "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "imdb": "8.8",
-        "description": "مردی بی‌خواب با شخصیت کاریزماتیک تایلر داردن یک باشگاه مبارزه زیرزمینی تشکیل می‌دهد"
-    },
-    "Inception": {
-        "url": "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "imdb": "8.8",
-        "description": "دزدی از رویاها و کاشتن ایده در ذهن ناخودآگاه افراد در لایه‌های مختلف خواب"
-    },
-    "The Matrix": {
-        "url": "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "imdb": "8.7",
-        "description": "هکری که متوجه می‌شود دنیا یک شبیه‌سازی کامپیوتری است و به مبارزه با ماشین‌ها می‌پردازد"
-    },
-    "Interstellar": {
-        "url": "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "imdb": "8.6",
-        "description": "سفری حماسی به اعماق فضا برای یافتن سیاره‌ای قابل سکونت برای نجات بشریت"
-    },
-    "Parasite": {
-        "url": "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "imdb": "8.5",
-        "description": "داستان خانواده‌ای فقیر که به صورت انگل وارد زندگی خانواده‌ای ثروتمند می‌شوند"
-    },
-    "Joker": {
-        "url": "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "imdb": "8.4",
-        "description": "روایتی تاریک از شکل‌گیری شخصیت جوکر و تبدیل یک کمدین شکست‌خورده به تبهکار"
-    },
-    "Spider-Man: Into the Spider-Verse": {
-        "url": "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "imdb": "8.4",
-        "description": "مایلز مورالس با مرد عنکبوتی‌های دنیاهای موازی همکاری می‌کند تا دنیا را نجات دهند"
-    },
-    "Avengers: Endgame": {
-        "url": "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "imdb": "8.4",
-        "description": "انتقام‌جویان تلاش می‌کنند تا اقدامات مخرب تانوس را خنثی کنند"
-    }
-}
+# Path to the movies database JSON file
+MOVIE_DB_PATH = os.path.join(os.path.dirname(__file__), "movie_database.json")
+
+def load_movies_db():
+    """Load movies database from JSON file."""
+    try:
+        with open(MOVIE_DB_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load movie database: {e}")
+        return {}
+
+def save_movies_db(movies):
+    """Save movies database to JSON file."""
+    try:
+        with open(MOVIE_DB_PATH, "w", encoding="utf-8") as f:
+            json.dump(movies, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save movie database: {e}")
+
+# Load movies at startup
+MOVIES = load_movies_db()
 
 # Channel configuration
 FIXED_CHANNEL_URL = "https://t.me/Alltelegramproxy0"
@@ -106,6 +74,64 @@ async def send_main_menu(chat_id: int, context: CallbackContext, message_text: s
 # Command handlers
 async def start(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
+    # Handle deep-linking with /start movie_XXX
+    args = context.args if hasattr(context, "args") else []
+    if args and args[0].startswith("movie_"):
+        movie_id = args[0].replace("movie_", "")
+        movie_info = get_movie_by_id(movie_id)
+        if movie_info:
+            # Generate proper download URL for locally stored movies
+            download_url = movie_info['download_link']
+            if movie_info['url'].startswith('/root/blue_movie/movies/'):
+                file_name = os.path.basename(movie_info['url'])
+                timestamp = int(time.time())
+                server_download_url = f"http://{SERVER_HOST}:{SERVER_PORT}/{file_name}?t={timestamp}"
+                download_url = server_download_url
+
+            detailed_info = f"""
+🎬 **{movie_info['title']}** ({movie_info['year']})
+
+📖 **خلاصه داستان:**
+{movie_info['description']}
+
+
+
+🎭 **ژانر:** {movie_info['genre']}
+🎬 **کارگردان:** {movie_info['director']}
+👥 **بازیگران اصلی:** {movie_info['cast']}
+⏱️ **مدت زمان:** {movie_info['duration']}
+📱 **کیفیت موجود:** {movie_info['quality']}
+• **زبان:** {movie_info['language']}
+• **زیرنویس:** فارسی
+
+⭐️ **امتیاز IMDB:** {movie_info['imdb']}/10
+            """
+            download_keyboard = [[
+                InlineKeyboardButton("📥 دانلود فایل", url=download_url)
+            ]]
+            # Send movie cover as photo with caption
+            image_path = movie_info.get('image', '')
+            if image_path and os.path.exists(image_path):
+                with open(image_path, 'rb') as photo_file:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo_file,
+                        caption=detailed_info,
+                        parse_mode='Markdown',
+                        reply_markup=InlineKeyboardMarkup(download_keyboard)
+                    )
+            else:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=detailed_info,
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup(download_keyboard)
+                )
+            return  # Do not show main menu, just send the movie card
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="❌ اطلاعات فیلم یافت نشد!")
+            return
+
     # Ensure user_channels is initialized for the user
     if chat_id not in user_channels:
         user_channels[chat_id] = [FIXED_CHANNEL_USERNAME]
@@ -207,20 +233,31 @@ async def search_start(update: Update, context: CallbackContext):
     await update.message.reply_text("🔍 لطفاً کلمه جستجو را وارد کنید:")
     return SEARCH
 
+# Helper function to get movie by ID
+def get_movie_by_id(movie_id: str):
+    return MOVIES.get(movie_id)
+
+# Helper function to search movies by title
+def search_movies_by_title(query: str):
+    results = {}
+    for movie_id, movie_info in MOVIES.items():
+        if query.lower() in movie_info['title'].lower():
+            results[movie_id] = movie_info
+    return results
+
 async def search_received(update: Update, context: CallbackContext):
     query_text = update.message.text.strip()
     if not query_text:
         await update.message.reply_text("❌ لطفاً کلمه جستجو را وارد کنید. مثال: داستان")
         return SEARCH
-    results = {}
-    for title, info in MOVIES.items():
-        if query_text.lower() in title.lower():
-            results[title] = info
+    
+    results = search_movies_by_title(query_text)
+    
     if not results:
         await update.message.reply_text("❌ فیلمی مطابق با جستجو یافت نشد!")
     else:
-        keyboard = [[InlineKeyboardButton(f"🎬 {title}", callback_data=f"movie_{title}")]
-                    for title in results.keys()]
+        keyboard = [[InlineKeyboardButton(f"🎬 {movie_info['title']}", callback_data=f"movie_{movie_id}")]
+                    for movie_id, movie_info in results.items()]
 
         response_text = ("🎬 نتایج جستجو:\n"
                          "برای مشاهده جزئیات و پیش‌نمایش، روی دکمه مربوطه کلیک کنید.\n"
@@ -238,9 +275,10 @@ async def best_movies(update: Update, context: CallbackContext):
         alert_text = "⚠️ لطفاً ابتدا در کانال عضو شوید تا بتوانید از امکانات مشاهده بهترین‌ها استفاده کنید!"
         await update.message.reply_text(alert_text)
         return
+    
     sorted_movies = sorted(MOVIES.items(), key=lambda x: float(x[1]['imdb']), reverse=True)[:10]
-    keyboard = [[InlineKeyboardButton(f"🎬 {title} ({info['imdb']})", callback_data=f"movie_{title}")]
-                for title, info in sorted_movies]
+    keyboard = [[InlineKeyboardButton(f"🎬 {movie_info['title']} ({movie_info['imdb']})", callback_data=f"movie_{movie_id}")]
+                for movie_id, movie_info in sorted_movies]
     response_text = ("🎖 بهترین‌های تاریخ (10 فیلم برتر):\n"
                      "برای مشاهده جزئیات و پیش‌نمایش، روی دکمه مربوطه کلیک کنید.\n"
                      "⏳ (توجه: پیش‌نمایش به مدت 10 ثانیه نمایش داده می‌شود)")
@@ -249,27 +287,70 @@ async def best_movies(update: Update, context: CallbackContext):
 async def movie_preview(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
-    movie_name = query.data.split("_", 1)[1]
-    movie_info = MOVIES.get(movie_name)
+    movie_id = query.data.split("_", 1)[1]
+    movie_info = get_movie_by_id(movie_id)
+    
     if movie_info:
-        notify_text = (
-            f"🎥 در حال دانلود پیش‌نمایش «{movie_name}»...\n\n"
-            f"📽 عنوان: {movie_name}\n"
-            f"⭐ امتیاز IMDB: {movie_info['imdb']}\n"
-            f"📝 توضیحات: {movie_info['description']}\n"
-            f"💡 پیشنهادی: از این تجربه لذت ببرید!\n\n"
-            f"⏳ توجه: این پیش‌نمایش تنها به مدت 10 ثانیه نمایش داده می‌شود. لطفاً در صورت تمایل ذخیره کنید."
+        movie_title = movie_info['title']
+        notify_msg = await context.bot.send_message(
+            chat_id=query.message.chat.id,
+            text=f"🎥 در حال آماده‌سازی اطلاعات «{movie_title}»..."
         )
-        notify_msg = await context.bot.send_message(chat_id=query.message.chat.id, text=notify_text)
-        video_msg = await context.bot.send_video(chat_id=query.message.chat.id, video=movie_info['url'], caption=f"🔔 پیش‌نمایش «{movie_name}»")
-        await asyncio.sleep(10)
+        
+        # Generate proper download URL for locally stored movies
+        download_url = movie_info['download_link']
+        if movie_info['url'].startswith('/root/blue_movie/movies/'):
+            file_name = os.path.basename(movie_info['url'])
+            timestamp = int(time.time())
+            server_download_url = f"http://{SERVER_HOST}:{SERVER_PORT}/{file_name}?t={timestamp}"
+            download_url = server_download_url
+        
+        detailed_info = f"""
+🎬 **{movie_info['title']}** ({movie_info['year']})
+
+📖 **خلاصه داستان:**
+{movie_info['description']}
+
+
+
+🎭 **ژانر:** {movie_info['genre']}
+🎬 **کارگردان:** {movie_info['director']}
+👥 **بازیگران اصلی:** {movie_info['cast']}
+⏱️ **مدت زمان:** {movie_info['duration']}
+📱 **کیفیت موجود:** {movie_info['quality']}
+• **زبان:** {movie_info['language']}
+• **زیرنویس:** فارسی
+
+⭐️ **امتیاز IMDB:** {movie_info['imdb']}/10
+        """
+        download_keyboard = [[
+            InlineKeyboardButton("📥 دانلود فایل", url=download_url)
+        ]]
+        # Send movie cover as photo with caption
+        image_path = movie_info.get('image', '')
+        if image_path and os.path.exists(image_path):
+            with open(image_path, 'rb') as photo_file:
+                await context.bot.send_photo(
+                    chat_id=query.message.chat.id,
+                    photo=photo_file,
+                    caption=detailed_info,
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup(download_keyboard)
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=query.message.chat.id,
+                text=detailed_info,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(download_keyboard)
+            )
+        logger.info(f"Download link generated for {movie_title}: {download_url}")
         try:
             await context.bot.delete_message(chat_id=query.message.chat.id, message_id=notify_msg.message_id)
-            await context.bot.delete_message(chat_id=query.message.chat.id, message_id=video_msg.message_id)
-        except Exception as e:
-            logger.error(f"Error deleting preview messages: {e}")
+        except Exception:
+            pass
     else:
-        await context.bot.send_message(chat_id=query.message.chat.id, text="❌ پیش‌نمایش فیلم یافت نشد!")
+        await context.bot.send_message(chat_id=query.message.chat.id, text="❌ اطلاعات فیلم یافت نشد!")
 
 async def set_commands(app: Application):
     commands = [
@@ -278,9 +359,9 @@ async def set_commands(app: Application):
         BotCommand("bestmovies", "نمایش بهترین فیلم‌ها بر اساس امتیاز IMDB")
     ]
     try:
-        # Set commands for default scope (all chats and users)
-        from telegram.ext import CommandScope
-        await app.bot.set_my_commands(commands, scope=CommandScope.DEFAULT)
+        # Fix CommandScope import - it should be imported from telegram, not telegram.ext
+        from telegram import BotCommandScopeDefault
+        await app.bot.set_my_commands(commands, scope=BotCommandScopeDefault())
         logger.info("Bot commands have been set successfully")
     except Exception as e:
         logger.error(f"Error setting bot commands: {e}")
@@ -311,6 +392,128 @@ def main():
     application.add_handler(CallbackQueryHandler(movie_preview, pattern='^movie_'))
     
     application.run_polling()
+
+def start_file_server():
+    # serve files from the 'movies' subfolder, bind to all interfaces
+    movies_dir = os.path.join(os.path.dirname(__file__), "movies")
+    if os.path.exists(movies_dir):
+        os.chdir(movies_dir)
+        class CustomHTTPRequestHandler(SimpleHTTPRequestHandler):
+            # Set a large buffer size (16 MB) for faster file transfers
+            rbufsize = 16 * 1024 * 1024  # Read buffer size
+            wbufsize = 16 * 1024 * 1024  # Write buffer size
+            
+            # Override to handle broken pipe and other connection errors gracefully
+            def handle_one_request(self):
+                try:
+                    return SimpleHTTPRequestHandler.handle_one_request(self)
+                except BrokenPipeError:
+                    # Client disconnected during download - this is normal behavior
+                    logger.debug("Client disconnected during file download")
+                except ConnectionResetError:
+                    # Client closed connection
+                    logger.debug("Connection reset by client")
+                except Exception as e:
+                    logger.error(f"Error serving file: {e}")
+            
+            def guess_type(self, path):
+                # Always return application/octet-stream for video files to force download
+                if path.lower().endswith(('.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm')):
+                    return 'application/octet-stream', None
+                mimetype, encoding = super().guess_type(path)
+                return mimetype, encoding
+            
+            def copyfile(self, source, outputfile):
+                """Copy data from source to outputfile in larger chunks for better performance"""
+                CHUNK_SIZE = 64 * 1024 * 1024  # 64 MB chunks for faster transfer
+                while True:
+                    buf = source.read(CHUNK_SIZE)
+                    if not buf:
+                        break
+                    outputfile.write(buf)
+
+            def translate_path(self, path):
+                """Override to ensure proper handling of non-ASCII filenames"""
+                path = super().translate_path(path)
+                return path
+
+            def send_head(self):
+                """Common code for GET and HEAD commands.
+                Override to handle large files more efficiently.
+                """
+                path = self.translate_path(self.path)
+                if os.path.isdir(path):
+                    return super().send_head()
+                
+                # Handle non-directory requests - mainly file downloads
+                try:
+                    f = open(path, 'rb')
+                except OSError:
+                    self.send_error(404, "File not found")
+                    return None
+                
+                try:
+                    fs = os.fstat(f.fileno())
+                    content_type = self.guess_type(path)[0] or 'application/octet-stream'
+                    self.send_response(200)
+                    self.send_header("Content-type", content_type)
+                    self.send_header("Content-Length", str(fs[6]))
+                    self.send_header("Last-Modified", self.date_time_string(fs.st_mtime))
+                    
+                    # Always force file download with Content-Disposition header
+                    filename = os.path.basename(path)
+                    self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+                    
+                    # Optimization headers
+                    self.send_header('Accept-Ranges', 'bytes')
+                    self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                    self.send_header('Pragma', 'no-cache')
+                    self.send_header('Expires', '0')
+                    self.send_header('Content-Transfer-Encoding', 'binary')
+                    
+                    self.end_headers()
+                    return f
+                except:
+                    f.close()
+                    raise
+                    
+            def log_message(self, format, *args):
+                # More concise logging for file server
+                if args[1] == "200":  # Only log successful requests at info level
+                    logger.info(f"Serving file: {args[0]} - Status {args[1]}")
+                else:
+                    logger.warning(f"File server: {format % args}")
+
+        # Use ThreadingHTTPServer for concurrent downloads
+        try:
+            from http.server import ThreadingHTTPServer
+        except ImportError:
+            # Python <3.7 fallback
+            from socketserver import ThreadingMixIn
+            class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+                daemon_threads = True
+
+        httpd = ThreadingHTTPServer(("0.0.0.0", SERVER_PORT), CustomHTTPRequestHandler)
+        httpd.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        # Set TCP keep-alive parameters if on Linux
+        try:
+            # TCP_KEEPIDLE: time before sending keepalive probes
+            httpd.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+            # TCP_KEEPINTVL: time between keepalive probes
+            httpd.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+            # TCP_KEEPCNT: number of keepalive probes
+            httpd.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 6)
+        except (AttributeError, OSError):
+            # These options might not be available on all platforms
+            pass
+            
+        logger.info(f"Optimized file server started on http://0.0.0.0:{SERVER_PORT}")
+        httpd.serve_forever()
+    else:
+        logger.warning(f"Movies directory not found: {movies_dir}")
+
+# launch file server in background
+threading.Thread(target=start_file_server, daemon=True).start()
 
 if __name__ == '__main__': 
     main()
