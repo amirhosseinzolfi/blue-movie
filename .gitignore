@@ -1,3 +1,8 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+
 # Python
 __pycache__/
 *.py[cod]
@@ -5,6 +10,8 @@ __pycache__/
 *.so
 .Python
 env/
+venv/
+ENV/
 build/
 develop-eggs/
 dist/
@@ -16,9 +23,11 @@ lib64/
 parts/
 sdist/
 var/
+wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
 # Virtual Environment
 venv/
@@ -30,11 +39,42 @@ env/
 .vscode/
 *.swp
 *.swo
+*~
+.DS_Store
 
 # Logs
 *.log
+bot.log
 
 # Local configuration
-.env
 config.ini
-```
+config.py
+
+# Session files
+session.json
+processed_comments.json
+
+# Movie files (keep only database)
+movies/*.mkv
+movies/*.mp4
+movies/*.avi
+movies/*.mov
+movies/*.flv
+movies/*.webm
+wget-log*
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Service files
+*.service
+
+# Misc
+===\"
+readme.txt
